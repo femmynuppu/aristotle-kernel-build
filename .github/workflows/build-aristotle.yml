@@ -104,6 +104,13 @@ jobs:
             && echo "MTK modules cloned" \
             || echo "MTK modules not found, skipping"
 
+      - name: Patch kernel source
+        working-directory: ${{ env.KERNEL_DIR }}
+        run: |
+          # Fix rpmb-mtk.c undeclared identifier
+          sed -i 's/struct mmc_host \*mmc = mtk_mmc_host\[0\]/struct mmc_host *mmc = NULL/' drivers/char/rpmb/rpmb-mtk.c || true
+          echo "Kernel patches applied"
+
       - name: Integrate ReSukiSU
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
