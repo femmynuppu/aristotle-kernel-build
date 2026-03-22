@@ -1,0 +1,314 @@
+name: Build Kernel - Xiaomi 13T (aristotle)
+
+on:
+  workflow_dispatch:
+    inputs:
+      SUKISU_BRANCH:
+        description: 'SukiSU branch'
+        required: true
+        default: 'susfs-main'
+      ENABLE_KPM:
+        description: 'Enable KPM'
+        type: boolean
+        default: true
+      ENABLE_SUSFS:
+        description: 'Enable SUSFS v2.1'
+        type: boolean
+        default: true
+      ENABLE_BBR:
+        description: 'Enable TCP BBR/BBR2/BBQ'
+        type: boolean
+        default: true
+      ENABLE_ZRAM:
+        description: 'Enable ZRAM optimization'
+        type: boolean
+        default: true
+      CPU_FREQ:
+        description: 'CPU scheduler'
+        required: true
+        type: choice
+        options:
+          - EAS
+          - HMP
+        default: 'EAS'
+
+env:
+  ARCH: arm64
+  SUBARCH: arm64
+  KERNEL_SOURCE: 'https://github.com/femmynuppu/Xiaomi_Kernel_OpenSource'
+  KERNEL_BRANCH: 'bsp-aristotle-s-oss'
+  MTK_MODULES_SOURCE: 'https://github.com/MiCode/MTK_kernel_modules'
+  MTK_MODULES_BRANCH: 'bsp-aristotle-s-oss'
+  DEFCONFIG: 'aristotle_defconfig'
+  KERNEL_DIR: 'kernel_source'
+  OUT_DIR: 'out'
+
+jobs:
+  build:
+    name: Build aristotle kernel
+    runs-on: ubuntu-22.04
+
+    steps:
+      # ── Environment ──────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            git bc bison flex libssl-dev make libelf-dev \
+            libc6-dev binutils-aarch64-linux-gnu \
+            python3 python3-pip zip curl wget \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+            cpio kmod pahole pkg-config \
+            clang lld llvm
+
+      # ── Toolchain ─────────────────────────────────────────────────────────────
+      - name: Cache Neutron Clang
+        id: cache-clang
+        uses: actions/cache@v4
+        with:
+          path: ~/neutron-clang
+          key: neutron-clang-latest-v2
+
+      - name: Download Neutron Clang
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/neutron-clang && cd ~/neutron-clang
+          LATEST=$(curl -s https://api.github.com/repos/Neutron-Toolchains/clang-build-catalogue/releases/latest \
+            | grep tag_name | cut -d'"' -f4)
+          echo "Neutron Clang: $LATEST"
+          wget -q "https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/${LATEST}/neutron-clang-${LATEST}.tar.zst"
+          tar --use-compress-program=zstd -xf *.tar.zst
+          rm *.tar.zst
+
+      - name: Export toolchain path
+        run: |
+          echo "$HOME/neutron-clang/bin" >> $GITHUB_PATH
+          echo "CLANG_PATH=$HOME/neutron-clang/bin" >> $GITHUB_ENV
+
+      # ── Kernel Source ─────────────────────────────────────────────────────────
+      - name: Clone kernel source
+        run: |
+          git clone --depth=1 \
+            --branch ${{ env.KERNEL_BRANCH }} \
+            ${{ env.KERNEL_SOURCE }} \
+            ${{ env.KERNEL_DIR }}
+          echo "HEAD: $(git -C ${{ env.KERNEL_DIR }} log --oneline -1)"
+          echo "KERNEL_VERSION=$(make -C ${{ env.KERNEL_DIR }} kernelversion)" >> $GITHUB_ENV
+
+      - name: Clone MTK kernel modules
+        run: |
+          git clone --depth=1 \
+            --branch ${{ env.MTK_MODULES_BRANCH }} \
+            ${{ env.MTK_MODULES_SOURCE }} \
+            ${{ env.KERNEL_DIR }}/mtk_modules || \
+          echo "MTK modules not found for this branch, skipping"
+
+      # ── SukiSU + SUSFS ────────────────────────────────────────────────────────
+      - name: Integrate SukiSU Ultra
+        working-directory: ${{ env.KERNEL_DIR }}
+        run: |
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | \
+            bash -s ${{ inputs.SUKISU_BRANCH }}
+          echo "SukiSU integrated"
+
+      # ── Defconfig ─────────────────────────────────────────────────────────────
+      - name: Generate base defconfig
+        working-directory: ${{ env.KERNEL_DIR }}
+        run: |
+          make O=${{ env.OUT_DIR }} \
+            ARCH=${{ env.ARCH }} \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            ${{ env.DEFCONFIG }}
+
+      # ── Feature configs ───────────────────────────────────────────────────────
+      - name: Enable KPM (tracepoint hooks)
+        if: ${{ inputs.ENABLE_KPM == 'true' }}
+        working-directory: ${{ env.KERNEL_DIR }}
+        run: |
+          ./scripts/config --file ${{ env.OUT_DIR }}/.config \
+            -e MODULES \
+            -e MODULE_UNLOAD \
+            -d KSU_WITH_KPROBES
+          echo "KPM: tracepoint hooks enabled (non-kprobe)"
+
+      - name: Enable SUSFS v2.1
+        if: ${{ inputs.ENABLE_SUSFS == 'true' }}
+        working-directory: ${{ env.KERNEL_DIR }}
+        run: |
+          ./scripts/config --file ${{ env.OUT_DIR }}/.config \
+            -e KSU_SUSFS \
+            -e KSU_SUSFS_SUS_PATH \
+            -e KSU_SUSFS_SUS_MOUNT \
+            -e KSU_SUSFS_SUS_KSTAT \
+            -e KSU_SUSFS_SUS_OVERLAYFS \
+            -e KSU_SUSFS_TRY_UMOUNT \
+            -e KSU_SUSFS_SPOOF_UNAME \
+            -e KSU_SUSFS_ENABLE_LOG \
+            -e KSU_SUSFS_OPEN_REDIRECT \
+            -e KSU_SUSFS_SUS_SU
+          echo "SUSFS v2.1: all features enabled"
+
+      - name: Enable TCP BBR + BBR2 + BBQ
+        if: ${{ inputs.ENABLE_BBR == 'true' }}
+        working-directory: ${{ env.KERNEL_DIR }}
+        run: |
+          ./scripts/config --file ${{ env.OUT_DIR }}/.config \
+            -e TCP_CONG_ADVANCED \
+            -e TCP_CONG_BBR \
+            -e TCP_CONG_BBR2 \
+            -m TCP_CONG_BIC \
+            -m TCP_CONG_CUBIC \
+            -m TCP_CONG_WESTWOOD \
+            -m TCP_CONG_HTCP \
+            --set-str DEFAULT_TCP_CONG bbr
+          echo "TCP: BBR set as default, BBR2+BBQ enabled"
+
+      - name: Enable ZRAM optimization
+        if: ${{ inputs.ENABLE_ZRAM == 'true' }}
+        working-directory: ${{ env.KERNEL_DIR }}
+        run: |
+          ./scripts/config --file ${{ env.OUT_DIR }}/.config \
+            -e ZRAM \
+            -e ZRAM_DEF_COMP_LZORLE \
+            -e ZSMALLOC \
+            -e ZSMALLOC_STAT \
+            -e CRYPTO_LZO \
+            -e CRYPTO_LZ4 \
+            -e CRYPTO_LZ4HC \
+            -e CRYPTO_ZSTD \
+            -e ZRAM_WRITEBACK
+          echo "ZRAM: multi-algo + writeback enabled"
+
+      - name: EAS scheduler config
+        if: ${{ inputs.CPU_FREQ == 'EAS' }}
+        working-directory: ${{ env.KERNEL_DIR }}
+        run: |
+          ./scripts/config --file ${{ env.OUT_DIR }}/.config \
+            -e ENERGY_MODEL \
+            -e CPU_FREQ_GOV_SCHEDUTIL \
+            -e CPU_FREQ_DEFAULT_GOV_SCHEDUTIL \
+            -d CPU_FREQ_DEFAULT_GOV_PERFORMANCE
+          echo "Scheduler: EAS + schedutil"
+
+      - name: HMP scheduler config
+        if: ${{ inputs.CPU_FREQ == 'HMP' }}
+        working-directory: ${{ env.KERNEL_DIR }}
+        run: |
+          ./scripts/config --file ${{ env.OUT_DIR }}/.config \
+            -e SCHED_HMP \
+            -e CPU_FREQ_GOV_PERFORMANCE \
+            -e CPU_FREQ_DEFAULT_GOV_PERFORMANCE
+          echo "Scheduler: HMP + performance"
+
+      - name: Resolve config deps
+        working-directory: ${{ env.KERNEL_DIR }}
+        run: |
+          make O=${{ env.OUT_DIR }} \
+            ARCH=${{ env.ARCH }} CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            olddefconfig
+
+      # ── Build ─────────────────────────────────────────────────────────────────
+      - name: Build kernel
+        working-directory: ${{ env.KERNEL_DIR }}
+        run: |
+          BUILD_START=$(date +%s)
+
+          make -j$(nproc --all) \
+            O=${{ env.OUT_DIR }} \
+            ARCH=${{ env.ARCH }} \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            2>&1 | tee build.log
+
+          BUILD_END=$(date +%s)
+          ELAPSED=$(( BUILD_END - BUILD_START ))
+          echo "Build time: $(( ELAPSED / 60 ))m $(( ELAPSED % 60 ))s"
+
+          if [ ! -f ${{ env.OUT_DIR }}/arch/arm64/boot/Image.gz ]; then
+            echo "BUILD FAILED"
+            tail -80 build.log
+            exit 1
+          fi
+          echo "BUILD SUCCESS"
+          ls -lh ${{ env.OUT_DIR }}/arch/arm64/boot/
+
+      # ── Package ───────────────────────────────────────────────────────────────
+      - name: Clone AnyKernel3
+        run: git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
+
+      - name: Configure AnyKernel3 for aristotle
+        working-directory: AnyKernel3
+        run: |
+          cat > anykernel.sh << 'EOF'
+          # AnyKernel3 config — Xiaomi 13T (aristotle) by @feemi2
+          kernel.string=SukiSU Kernel for Xiaomi 13T
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=aristotle
+          device.name2=Xiaomi 13T
+          supported.versions=13-14
+          supported.patchlevels=
+          EOF
+
+      - name: Package zip
+        run: |
+          cp ${{ env.KERNEL_DIR }}/${{ env.OUT_DIR }}/arch/arm64/boot/Image.gz AnyKernel3/
+          [ -f ${{ env.KERNEL_DIR }}/${{ env.OUT_DIR }}/arch/arm64/boot/dtbo.img ] && \
+            cp ${{ env.KERNEL_DIR }}/${{ env.OUT_DIR }}/arch/arm64/boot/dtbo.img AnyKernel3/
+
+          FEATURES="KPM-SUSFS-BBR-ZRAM"
+          ZIPNAME="SukiSU_aristotle_${FEATURES}_$(date +%Y%m%d%H%M).zip"
+          echo "ZIPNAME=$ZIPNAME" >> $GITHUB_ENV
+
+          cd AnyKernel3
+          zip -r9 ../$ZIPNAME . -x .git README.md *placeholder
+
+      # ── Upload ────────────────────────────────────────────────────────────────
+      - name: Upload kernel zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIPNAME }}
+          path: ${{ env.ZIPNAME }}
+          retention-days: 7
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: ${{ env.KERNEL_DIR }}/build.log
+          retention-days: 3
+
+      - name: Build summary
+        run: |
+          echo "## ✅ aristotle Kernel Build" >> $GITHUB_STEP_SUMMARY
+          echo "| | |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Device** | Xiaomi 13T (aristotle) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Kernel** | ${{ env.KERNEL_VERSION }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Branch** | ${{ env.KERNEL_BRANCH }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **SukiSU** | ${{ inputs.SUKISU_BRANCH }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **KPM** | ${{ inputs.ENABLE_KPM }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **SUSFS** | ${{ inputs.ENABLE_SUSFS }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **TCP BBR** | ${{ inputs.ENABLE_BBR }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **ZRAM** | ${{ inputs.ENABLE_ZRAM }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Scheduler** | ${{ inputs.CPU_FREQ }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Output** | \`${{ env.ZIPNAME }}\` |" >> $GITHUB_STEP_SUMMARY
