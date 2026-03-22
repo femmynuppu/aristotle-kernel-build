@@ -107,8 +107,12 @@ jobs:
       - name: Patch kernel source
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
-          # Fix rpmb-mtk.c: undeclared mtk_mmc_host
-          sed -i '2326s/.*/		struct mmc_host *mmc = NULL;/' drivers/char/rpmb/rpmb-mtk.c
+          # Fix 1: rpmb-mtk.c undeclared mtk_mmc_host
+          sed -i '2326s/.*/\t\tstruct mmc_host *mmc = NULL;/' drivers/char/rpmb/rpmb-mtk.c
+
+          # Fix 2: ged_bridge.c implicit fpsgo_notify_gpu_block
+          sed -i 's/ret = fpsgo_notify_gpu_block(in->tid, in->i32BridgeFD, in->hint);/ret = 0; \/\/ fpsgo_notify_gpu_block disabled/' drivers/gpu/mediatek/ged/src/ged_bridge.c || true
+
           echo "Kernel patches applied"
 
       - name: Integrate ReSukiSU
