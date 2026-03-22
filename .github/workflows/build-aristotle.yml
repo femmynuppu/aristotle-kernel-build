@@ -107,8 +107,13 @@ jobs:
       - name: Patch kernel source
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
-          # Fix rpmb-mtk.c undeclared identifier
-          sed -i 's/struct mmc_host \*mmc = mtk_mmc_host\[0\]/struct mmc_host *mmc = NULL/' drivers/char/rpmb/rpmb-mtk.c || true
+          # Fix rpmb-mtk.c: undeclared mtk_mmc_host
+          python3 -c "
+data = open('drivers/char/rpmb/rpmb-mtk.c').read()
+data = data.replace('struct mmc_host *mmc = mtk_mmc_host[0]', 'struct mmc_host *mmc = NULL')
+open('drivers/char/rpmb/rpmb-mtk.c', 'w').write(data)
+print('patched rpmb-mtk.c')
+"
           echo "Kernel patches applied"
 
       - name: Integrate ReSukiSU
