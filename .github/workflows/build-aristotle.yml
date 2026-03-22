@@ -35,7 +35,7 @@ on:
 env:
   ARCH: arm64
   SUBARCH: arm64
-  KERNEL_SOURCE: 'https://github.com/femmynuppu/Xiaomi_Kernel_OpenSource'
+  KERNEL_SOURCE: 'https://github.com/MiCode/Xiaomi_Kernel_OpenSource'
   KERNEL_BRANCH: 'bsp-aristotle-s-oss'
   DEFCONFIG: 'aristotle_defconfig'
   KERNEL_DIR: 'kernel_source'
