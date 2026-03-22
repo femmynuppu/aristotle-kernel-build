@@ -47,7 +47,6 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      # ── Environment ──────────────────────────────────────────────────────────
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -62,13 +61,12 @@ jobs:
             cpio kmod pahole pkg-config \
             clang lld llvm
 
-      # ── Toolchain ─────────────────────────────────────────────────────────────
       - name: Cache Neutron Clang
         id: cache-clang
         uses: actions/cache@v4
         with:
           path: ~/neutron-clang
-          key: neutron-clang-latest-v3
+          key: neutron-clang-latest-v4
 
       - name: Download Neutron Clang
         if: steps.cache-clang.outputs.cache-hit != 'true'
@@ -80,22 +78,22 @@ jobs:
           wget -q "https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/${LATEST}/neutron-clang-${LATEST}.tar.zst"
           tar --use-compress-program=zstd -xf *.tar.zst
           rm *.tar.zst
-          echo "Clang: $(bin/clang --version | head -1)"
 
       - name: Export toolchain path
         run: |
           echo "$HOME/neutron-clang/bin" >> $GITHUB_PATH
-          echo "CLANG_PATH=$HOME/neutron-clang/bin" >> $GITHUB_ENV
 
-      # ── Kernel Source ─────────────────────────────────────────────────────────
       - name: Clone kernel source
         run: |
           git clone --depth=1 \
             --branch ${{ env.KERNEL_BRANCH }} \
             ${{ env.KERNEL_SOURCE }} \
             ${{ env.KERNEL_DIR }}
-          echo "HEAD: $(git -C ${{ env.KERNEL_DIR }} log --oneline -1)"
-          echo "KERNEL_VERSION=$(make -C ${{ env.KERNEL_DIR }} kernelversion)" >> $GITHUB_ENV
+          cd ${{ env.KERNEL_DIR }}
+          echo "HEAD: $(git log --oneline -1)"
+          KVER=$(make kernelversion 2>/dev/null | grep -E '^[0-9]+\.[0-9]+' | head -1)
+          echo "KERNEL_VERSION=${KVER}" >> $GITHUB_ENV
+          echo "Kernel version: ${KVER}"
 
       - name: Clone MTK kernel modules
         run: |
@@ -106,7 +104,6 @@ jobs:
             && echo "MTK modules cloned" \
             || echo "MTK modules not found, skipping"
 
-      # ── ReSukiSU + SUSFS ──────────────────────────────────────────────────────
       - name: Integrate ReSukiSU
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
@@ -114,7 +111,6 @@ jobs:
             bash -s ${{ inputs.SUKISU_BRANCH }}
           echo "ReSukiSU integrated"
 
-      # ── Defconfig ─────────────────────────────────────────────────────────────
       - name: Generate base defconfig
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
@@ -126,7 +122,6 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             ${{ env.DEFCONFIG }}
 
-      # ── KPM ──────────────────────────────────────────────────────────────────
       - name: Enable KPM
         if: ${{ inputs.ENABLE_KPM == 'true' }}
         working-directory: ${{ env.KERNEL_DIR }}
@@ -138,7 +133,6 @@ jobs:
             -d KSU_WITH_KPROBES
           echo "KPM enabled"
 
-      # ── SUSFS ─────────────────────────────────────────────────────────────────
       - name: Enable SUSFS
         if: ${{ inputs.ENABLE_SUSFS == 'true' }}
         working-directory: ${{ env.KERNEL_DIR }}
@@ -156,7 +150,6 @@ jobs:
             -e KSU_SUSFS_SUS_SU
           echo "SUSFS enabled"
 
-      # ── TCP BBR ───────────────────────────────────────────────────────────────
       - name: Enable TCP BBR
         if: ${{ inputs.ENABLE_BBR == 'true' }}
         working-directory: ${{ env.KERNEL_DIR }}
@@ -172,7 +165,6 @@ jobs:
             --set-str DEFAULT_TCP_CONG bbr
           echo "TCP BBR enabled"
 
-      # ── ZRAM ─────────────────────────────────────────────────────────────────
       - name: Enable ZRAM
         if: ${{ inputs.ENABLE_ZRAM == 'true' }}
         working-directory: ${{ env.KERNEL_DIR }}
@@ -189,7 +181,6 @@ jobs:
             -e ZRAM_WRITEBACK
           echo "ZRAM enabled"
 
-      # ── Scheduler ─────────────────────────────────────────────────────────────
       - name: EAS scheduler
         if: ${{ inputs.CPU_SCHED == 'EAS' }}
         working-directory: ${{ env.KERNEL_DIR }}
@@ -211,7 +202,6 @@ jobs:
             -e CPU_FREQ_DEFAULT_GOV_PERFORMANCE
           echo "Scheduler: HMP"
 
-      # ── Resolve deps ──────────────────────────────────────────────────────────
       - name: Resolve config deps
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
@@ -221,7 +211,6 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu- \
             olddefconfig
 
-      # ── Build ─────────────────────────────────────────────────────────────────
       - name: Build kernel
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
@@ -251,11 +240,9 @@ jobs:
             tail -100 build.log
             exit 1
           fi
-
           echo "BUILD SUCCESS"
           ls -lh ${{ env.OUT_DIR }}/arch/arm64/boot/
 
-      # ── Package ───────────────────────────────────────────────────────────────
       - name: Clone AnyKernel3
         run: git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
 
@@ -263,8 +250,7 @@ jobs:
         working-directory: AnyKernel3
         run: |
           cat > anykernel.sh << 'EOF'
-          # AnyKernel3 — Xiaomi 13T (aristotle) by @feemi2
-          kernel.string=ReSukiSU Kernel for Xiaomi 13T by feemi2
+          kernel.string=ReSukiSU Kernel aristotle by feemi2
           do.devicecheck=1
           do.modules=0
           do.systemless=1
@@ -282,15 +268,13 @@ jobs:
           [ -f ${{ env.KERNEL_DIR }}/${{ env.OUT_DIR }}/arch/arm64/boot/dtbo.img ] && \
             cp ${{ env.KERNEL_DIR }}/${{ env.OUT_DIR }}/arch/arm64/boot/dtbo.img AnyKernel3/
 
-          SCHED="${{ inputs.CPU_SCHED }}"
-          ZIPNAME="ReSukiSU_aristotle_KPM-SUSFS-BBR-ZRAM-${SCHED}_$(date +%Y%m%d%H%M).zip"
-          echo "ZIPNAME=$ZIPNAME" >> $GITHUB_ENV
+          ZIPNAME="ReSukiSU_aristotle_${{ inputs.CPU_SCHED }}_$(date +%Y%m%d%H%M).zip"
+          echo "ZIPNAME=${ZIPNAME}" >> $GITHUB_ENV
 
           cd AnyKernel3
-          zip -r9 ../$ZIPNAME . -x .git README.md *placeholder
-          echo "Packaged: $ZIPNAME"
+          zip -r9 ../${ZIPNAME} . -x .git README.md *placeholder
+          echo "Packaged: ${ZIPNAME}"
 
-      # ── Upload ────────────────────────────────────────────────────────────────
       - name: Upload kernel zip
         uses: actions/upload-artifact@v4
         with:
@@ -308,11 +292,11 @@ jobs:
 
       - name: Build summary
         run: |
-          echo "## ✅ aristotle Kernel Build" >> $GITHUB_STEP_SUMMARY
+          echo "## aristotle Kernel Build" >> $GITHUB_STEP_SUMMARY
           echo "| | |" >> $GITHUB_STEP_SUMMARY
           echo "|---|---|" >> $GITHUB_STEP_SUMMARY
           echo "| **Device** | Xiaomi 13T (aristotle) |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Kernel** | ${{ env.KERNEL_VERSION }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Kernel base** | ${{ env.KERNEL_VERSION }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **ReSukiSU** | ${{ inputs.SUKISU_BRANCH }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **KPM** | ${{ inputs.ENABLE_KPM }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **SUSFS** | ${{ inputs.ENABLE_SUSFS }} |" >> $GITHUB_STEP_SUMMARY
